@@ -15,7 +15,7 @@ def get_zuxuan_duizi_digit(code):
         return digits[0]  # AAB型，A是对子数字
     elif digits[1] == digits[2] and digits[0] != digits[1]:
         return digits[2]  # BAA型，A是对子数字
-    return None  # 组六或豹子，无对子数字
+    return None  
 
 
 def calc_duizi_miss(csv_file='all3D.csv'):
