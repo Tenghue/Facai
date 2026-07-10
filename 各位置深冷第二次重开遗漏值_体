@@ -1,0 +1,228 @@
+# 文件名：pl3_corrected_long_gap_analysis.py
+import pandas as pd
+import numpy as np
+import os
+
+def guess_column_names(df):
+    period_candidates = ['period', '期号', 'date', 'time', '期次', '开奖期号']
+    number_candidates = ['number', '开奖号码', 'code', 'num', '号码', '三位数']
+    period_col = None
+    number_col = None
+    for col in df.columns:
+        col_lower = col.lower()
+        if any(cand in col_lower for cand in period_candidates):
+            period_col = col
+        if any(cand in col_lower for cand in number_candidates):
+            number_col = col
+    return period_col, number_col
+
+def analyze_long_gap_reopen_corrected(csv_path, period_col=None, number_col=None, gap_threshold=40):
+    """
+    修正版：分析各位置数字在长遗漏(>threshold)后开出，其再次遗漏多少期重开的遗漏值
+    """
+    if not os.path.exists(csv_path):
+        print(f"❌ 错误：文件不存在！请检查路径：{csv_path}")
+        return
+
+    encodings = ['utf-8', 'gbk', 'gb2312']
+    df = None
+    for enc in encodings:
+        try:
+            df = pd.read_csv(csv_path, dtype=str, encoding=enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if df is None:
+        print("❌ 无法用 utf-8/gbk/gb2312 编码读取文件，请手动指定编码。")
+        return
+
+    print(f"✅ 加载 {len(df)} 行数据（编码：{enc}）")
+
+    # 自动猜列名
+    if not period_col or not number_col:
+        p, n = guess_column_names(df)
+        if p and n:
+            period_col, number_col = p, n
+            print(f"🔍 自动识别：期号='{period_col}'，号码='{number_col}'")
+        else:
+            # 尝试默认中文列名
+            if '期号' in df.columns and '开奖号码' in df.columns:
+                period_col, number_col = '期号', '开奖号码'
+            elif 'period' in df.columns and 'number' in df.columns:
+                period_col, number_col = 'period', 'number'
+            else:
+                print("❌ 无法确定列名，请编辑脚本设置 DEFAULT_PERIOD/DEFAULT_NUMBER")
+                return
+
+    # 验证列
+    if period_col not in df.columns:
+        print(f"❌ 列 '{period_col}' 不存在！可用列：{list(df.columns)}")
+        return
+    if number_col not in df.columns:
+        print(f"❌ 列 '{number_col}' 不存在！可用列：{list(df.columns)}")
+        return
+
+    # 清洗号码：只保留3位纯数字
+    df = df.copy()
+    df[number_col] = df[number_col].astype(str).str.strip()
+    df = df[df[number_col].str.match(r'^\d{3}$')]
+    if len(df) == 0:
+        print("❌ 无有效3位号码数据。")
+        return
+
+    # 排序：按期号数值或字符串升序
+    try:
+        df[period_col] = pd.to_numeric(df[period_col], errors='coerce')
+        df = df.dropna(subset=[period_col]).sort_values(period_col).reset_index(drop=True)
+    except:
+        df = df.sort_values(period_col).reset_index(drop=True)
+
+    # 初始化结构存储数据
+    # structure: { position: { digit: { 'reopen_events': [] } } }
+    # reopen_events: list of {'reopen_period': ..., 'reopen_number': ..., 'next_gap': ...}
+    stats = {}
+    for pos in ['百位', '十位', '个位']:
+        stats[pos] = {}
+        for d in range(10):
+            stats[pos][d] = {'reopen_events': []}
+
+    # 提取每一位的数字
+    df['百位'] = df[number_col].str[0].astype(int)
+    df['十位'] = df[number_col].str[1].astype(int)
+    df['个位'] = df[number_col].str[2].astype(int)
+
+    # 遍历三个位置
+    for pos_name in ['百位', '十位', '个位']:
+        print(f"\n🔍 正在分析 {pos_name} 位置...")
+        pos_digit_col = pos_name
+        pos_idx = {'百位': 0, '十位': 1, '个位': 2}[pos_name]
+
+        # 对每个数字 0-9 分别分析
+        for digit in range(10):
+            print(f"  - 分析数字 {digit}...")
+
+            # 找到该数字在该位置出现的所有期次
+            digit_occurrence_indices = df[df[pos_digit_col] == digit].index.tolist()
+            
+            if len(digit_occurrence_indices) < 2:
+                # 如果该数字在该位置出现次数少于2次，则无法计算遗漏值
+                print(f"    - 该数字在该位置仅出现 {len(digit_occurrence_indices)} 次，跳过。")
+                continue
+            
+            # 计算每次出现前的遗漏值
+            for i in range(1, len(digit_occurrence_indices)):
+                prev_idx = digit_occurrence_indices[i-1]
+                curr_idx = digit_occurrence_indices[i]
+                current_gap = curr_idx - prev_idx - 1 # 当前这次出现前的遗漏期数
+                
+                # 如果当前遗漏值超过了阈值，那么这一次出现就是我们要分析的“长遗漏后重开”
+                if current_gap > gap_threshold:
+                    reopen_idx = curr_idx # 当前这次就是重开
+                    reopen_period = df.iloc[reopen_idx][period_col]
+                    reopen_number = df.iloc[reopen_idx][number_col]
+                    
+                    # 寻找下一次该数字在该位置出现
+                    next_appearance_idx = None
+                    for j in range(curr_idx + 1, len(df)):
+                        if df.iloc[j][pos_digit_col] == digit:
+                            next_appearance_idx = j
+                            break
+                    
+                    if next_appearance_idx is not None:
+                        next_gap = next_appearance_idx - curr_idx - 1 # 从这次重开到下次出现的遗漏期数
+                        next_period = df.iloc[next_appearance_idx][period_col]
+                        
+                        stats[pos_name][digit]['reopen_events'].append({
+                            'reopen_period': reopen_period,
+                            'reopen_number': reopen_number,
+                            'next_gap': next_gap,
+                            'next_period': next_period
+                        })
+                        
+                        print(f"    - {prev_idx}->{curr_idx} 遗漏 {current_gap} 期后，于 {reopen_period} 期重开({reopen_number})，再次遗漏 {next_gap} 期后于 {next_period} 期出现。")
+                    else:
+                        # 如果之后再也没有出现，那么无法计算“再次遗漏”值
+                        print(f"    - {prev_idx}->{curr_idx} 遗漏 {current_gap} 期后，于 {reopen_period} 期重开，但之后未再出现。")
+
+
+    # 输出最终统计结果
+    print("\n" + "="*150)
+    print(f"📊 各位置各数字在长遗漏({gap_threshold}期+)后重开，其再次遗漏的统计")
+    print("="*150)
+    print(f"{'位置':<6} {'数字':<4} {'重开次数':<10} {'最长再次遗漏':<15} {'平均再次遗漏':<15} {'最频再次遗漏':<15} {'再次遗漏列表':<40}")
+    print("-"*150)
+
+    for pos_name in ['百位', '十位', '个位']:
+        for digit in range(10):
+            events = stats[pos_name][digit]['reopen_events']
+            reopen_gaps = [e['next_gap'] for e in events] # 提取所有再次遗漏值
+            count = len(events)
+            if count == 0:
+                print(f"{pos_name:<6} {digit:<4} {count:<10} N/A           N/A           N/A           N/A")
+            else:
+                max_rg = max(reopen_gaps)
+                avg_rg = round(np.mean(reopen_gaps), 2)
+                # 计算最频遗漏
+                if len(reopen_gaps) > 0:
+                    unique_vals, counts = np.unique(reopen_gaps, return_counts=True)
+                    most_frequent_idx = np.argmax(counts)
+                    most_frequent_val = unique_vals[most_frequent_idx]
+                else:
+                    most_frequent_val = "N/A"
+                
+                # 显示列表（限制长度以保持整洁）
+                gap_list_str = str(reopen_gaps)
+                if len(gap_list_str) > 35:
+                    gap_list_str = gap_list_str[:32] + "...]"
+                
+                print(f"{pos_name:<6} {digit:<4} {count:<10} {max_rg:<15} {avg_rg:<15.2f} {most_frequent_val:<15} {gap_list_str:<40}")
+
+    print("="*150)
+
+    # 可选：输出详细的触发事件日志
+    show_detail_log = input("\n是否显示详细的触发事件日志？(y/N): ").strip().lower()
+    if show_detail_log == 'y':
+        print("\n" + "="*180)
+        print(f"📋 详细触发事件日志 (长遗漏 > {gap_threshold} 期后重开及其后续遗漏)")
+        print("="*180)
+        print(f"{'位置':<6} {'数字':<4} {'长遗漏值':<12} {'重开期号':<12} {'重开号码':<10} {'再次遗漏':<12} {'下次出现期号':<15}")
+        print("-"*180)
+        for pos_name in ['百位', '十位', '个位']:
+            for digit in range(10):
+                events = stats[pos_name][digit]['reopen_events']
+                
+                for event in events:
+                    long_gap = event['next_gap'] + len(df) # Oops, wrong way. Need to find the long gap.
+                    # We need to find the long gap that triggered this event.
+                    # This requires looking back from the reopen_idx.
+                    # Let's find the index where this reopen happened
+                    reopen_idx = df[df[period_col] == event['reopen_period']].index[0]
+                    # Find the previous occurrence of this digit at this position
+                    prev_idx = None
+                    for i in range(reopen_idx - 1, -1, -1):
+                        if df.iloc[i][pos_name] == digit:
+                            prev_idx = i
+                            break
+                    if prev_idx is not None:
+                        actual_long_gap = reopen_idx - prev_idx - 1
+                    else:
+                        actual_long_gap = "Unknown" # Should not happen if data is clean
+                        
+                    print(f"{pos_name:<6} {digit:<4} {actual_long_gap:<12} {event['reopen_period']:<12} {event['reopen_number']:<10} {event['next_gap']:<12} {event['next_period']:<15}")
+        print("="*180)
+
+
+# ======================
+# 🔥 主程序入口
+# ======================
+if __name__ == "__main__":
+    DEFAULT_CSV = "allpaisan.csv"
+    
+    print("🎯 排列三长遗漏后重开分析工具 (修正版)")
+    print("📁 默认读取文件:", DEFAULT_CSV)
+    
+    if not os.path.exists(DEFAULT_CSV):
+        print(f"❌ 默认文件 {DEFAULT_CSV} 不存在！请将CSV文件重命名为 'alllpaisan.csv' 并放在同目录下，或编辑脚本修改 'DEFAULT_CSV'。")
+        sys.exit(1)
+    
+    analyze_long_gap_reopen_corrected(DEFAULT_CSV)

@@ -5,8 +5,8 @@ import numpy as np
 from collections import Counter
 
 # ================== 配置区域 ==================
-FILE_PATH = 'all3D.csv'   # 您的数据文件名
-TARGET_CODE = [0, 1]          # 【重点】这里可以填对子，如 [1, 1], [0, 0]；也可以是普通二码 [1, 5]
+FILE_PATH = 'allpaisan.csv'   # 您的数据文件名
+TARGET_CODE = [0, 5]          # 【重点】这里可以填对子，如 [1, 1], [0, 0]；也可以是普通二码 [1, 5]
 MAX_SHOW_PERIODS = None       # 图表只显示最近多少期 (设为 None 则显示全部历史)
 # ==============================================
 
