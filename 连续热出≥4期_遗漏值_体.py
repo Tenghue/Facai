@@ -125,7 +125,7 @@ def analyze_hot_streaks(periods, codes):
         digit_event_summary[d_str] = len(events)
         
         if events:
-            print(f"✅ 共发现 {len(events)} 次「连续热出≥3期」事件：")
+            print(f"✅ 共发现 {len(events)} 次「连续热出≥4期」事件：")
             print("-" * 80)
             for idx, ev in enumerate(events, 1):
                 flag = "✅" if ev['is_valid'] else "⚠️"
@@ -157,8 +157,8 @@ def analyze_hot_streaks(periods, codes):
             else:
                 print("⚠️  无有效重现事件（所有事件均为数据截止）")
         else:
-            print(f"❌ 未检测到数字 {digit} 的「连续热出≥3期」事件")
-            print("   （可能原因：该数字无连续3期及以上热出记录）")
+            print(f"❌ 未检测到数字 {digit} 的「连续热出≥4期」事件")
+            print("   （可能原因：该数字无连续4期及以上热出记录）")
     
     # ========== 全数字事件总览（0-9一目了然）==========
     print("\n" + "="*85)
